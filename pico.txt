@@ -1,0 +1,128 @@
+#include <Arduino.h>
+
+// ============================================================
+//  НАСТРОЙКИ
+// ============================================================
+#define NUM_COLS       9
+#define NUM_ROWS       6
+#define NUM_CELLS      (NUM_COLS * NUM_ROWS)   // 54
+
+#define USB_BAUD       115200
+#define BTN_PIN        15
+#define DEBOUNCE_MS    200
+
+#define PIN_R          6
+#define PIN_G          7
+#define PIN_B          8
+#define COMMON_ANODE   0
+
+uint8_t cellColors[NUM_CELLS][3];
+uint8_t rxBuf[NUM_CELLS * 3];
+int     rxIdx = 0;
+bool    headerFound = false;
+
+int currentCell = 0;
+bool lastBtnState = HIGH;
+uint32_t lastBtnTime = 0;
+volatile bool newData = false;
+
+// ============================================================
+//  ПАРСИНГ
+// ============================================================
+void parseByte(uint8_t b) {
+    if (!headerFound) {
+        if (b == 'C') {
+            headerFound = true;
+            rxIdx = 0;
+        }
+        return;
+    }
+
+    if (b == '\n') {
+        if (rxIdx == NUM_CELLS * 3) {
+            memcpy(cellColors, rxBuf, NUM_CELLS * 3);
+            newData = true;
+            Serial.println("A");   // ACK
+        } else {
+            Serial.println("N");   // NAK
+        }
+        headerFound = false;
+        rxIdx = 0;
+        return;
+    }
+
+    if (rxIdx < (int)sizeof(rxBuf)) {
+        rxBuf[rxIdx++] = b;
+    } else {
+        Serial.println("N");       // переполнение
+        headerFound = false;
+        rxIdx = 0;
+    }
+}
+
+// ============================================================
+//  RGB
+// ============================================================
+void setRGB(uint8_t r, uint8_t g, uint8_t b) {
+    if (COMMON_ANODE) {
+        analogWrite(PIN_R, 255 - r);
+        analogWrite(PIN_G, 255 - g);
+        analogWrite(PIN_B, 255 - b);
+    } else {
+        analogWrite(PIN_R, r);
+        analogWrite(PIN_G, g);
+        analogWrite(PIN_B, b);
+    }
+}
+
+void showCurrentCellColor() {
+    uint8_t r = cellColors[currentCell][0];
+    uint8_t g = cellColors[currentCell][1];
+    uint8_t b = cellColors[currentCell][2];
+    setRGB(r, g, b);
+}
+
+// ============================================================
+//  КНОПКА
+// ============================================================
+void handleButton() {
+    bool state = digitalRead(BTN_PIN);
+    uint32_t now = millis();
+    if (state == LOW && lastBtnState == HIGH &&
+        (now - lastBtnTime) > DEBOUNCE_MS) {
+        currentCell = (currentCell + 1) % NUM_CELLS;
+        lastBtnTime = now;
+        showCurrentCellColor();
+    }
+    lastBtnState = state;
+}
+
+// ============================================================
+//  SETUP / LOOP
+// ============================================================
+void setup() {
+    Serial.begin(USB_BAUD);
+    delay(3000);
+
+    pinMode(BTN_PIN, INPUT_PULLUP);
+    pinMode(PIN_R, OUTPUT);
+    pinMode(PIN_G, OUTPUT);
+    pinMode(PIN_B, OUTPUT);
+    setRGB(0, 0, 0);
+
+    memset(cellColors, 0, sizeof(cellColors));
+    Serial.println("R");   // READY
+}
+
+void loop() {
+    while (Serial.available()) {
+        parseByte(Serial.read());
+    }
+
+    handleButton();
+
+    if (newData) {
+        newData = false;
+        showCurrentCellColor();
+    }
+}
